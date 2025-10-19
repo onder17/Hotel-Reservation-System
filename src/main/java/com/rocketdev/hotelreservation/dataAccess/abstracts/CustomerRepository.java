@@ -6,5 +6,5 @@ import com.rocketdev.hotelreservation.entities.concretes.Customer;
 
 public interface CustomerRepository extends JpaRepository<Customer, Long> {
 	
-	boolean existsById(String identityNum); //Spring jpa keywords
+	boolean existsByIdentityNum(String identityNum); //Spring jpa keywords
 }
