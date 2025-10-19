@@ -13,7 +13,7 @@ public class CustomerBusinessRules {
 	private CustomerRepository customerRepository;
 	
 	public void checkIfCustomerNameExists(String identityNum) {
-		if(this.customerRepository.existsById(identityNum)) {
+		if(this.customerRepository.existsByIdentityNum(identityNum)) {
 			throw new BusinessException("Customer already exists!");
 		}
 		
