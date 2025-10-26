@@ -55,7 +55,7 @@ public class Room {
         STANDARD_SEA_VIEW,
         LUXURY_LAND_VIEW,
         LUXURY_SEA_VIEW,
-        PREMIUM_SEA_VIEW
+        PREMIUM_SEA_VIEw
 	}
 	
 	

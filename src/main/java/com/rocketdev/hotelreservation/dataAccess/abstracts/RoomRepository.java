@@ -6,5 +6,6 @@ import com.rocketdev.hotelreservation.entities.concretes.Room;
 
 public interface RoomRepository extends JpaRepository<Room, Long> {
 	//Special methods
+	
 
 }
