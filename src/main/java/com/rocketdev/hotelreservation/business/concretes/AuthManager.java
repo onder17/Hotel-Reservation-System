@@ -1,12 +1,18 @@
 package com.rocketdev.hotelreservation.business.concretes;
 
+import java.time.LocalDateTime;
 import java.util.Map;
+import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -15,7 +21,9 @@ import com.rocketdev.hotelreservation.business.abstracts.AuthService;
 import com.rocketdev.hotelreservation.business.requests.LoginRequest;
 import com.rocketdev.hotelreservation.business.requests.RegisterRequest;
 import com.rocketdev.hotelreservation.core.utilities.exceptions.BusinessException;
+import com.rocketdev.hotelreservation.dataAccess.abstracts.RefreshTokenRepository;
 import com.rocketdev.hotelreservation.dataAccess.abstracts.UserRepository;
+import com.rocketdev.hotelreservation.entities.concretes.RefreshToken;
 import com.rocketdev.hotelreservation.entities.concretes.Role;
 import com.rocketdev.hotelreservation.entities.concretes.User;
 import com.rocketdev.hotelreservation.security.JwtUtils;
@@ -30,13 +38,15 @@ public class AuthManager implements AuthService {
     @Autowired
     private JwtUtils jwtUtils;
     @Autowired
+    private RefreshTokenRepository refreshTokenRepository;
+    @Autowired
     private AuthenticationManager authenticationManager;
     @Autowired
     private UserDetailsService userDetailsService;
 
     @Override
     public ResponseEntity<?> register(RegisterRequest registerRequest) {
-        if(userRepository.existsByEmail(registerRequest.getEmail())) {
+        if (userRepository.existsByEmail(registerRequest.getEmail())) {
             throw new BusinessException("Email already exists!");
         }
 
@@ -57,9 +67,112 @@ public class AuthManager implements AuthService {
         authenticationManager
                 .authenticate(new UsernamePasswordAuthenticationToken(
                         loginRequest.getEmail(), loginRequest.getPassword()));
-        var user = userDetailsService.loadUserByUsername(loginRequest.getEmail());
-        var token = jwtUtils.generateToken(user);
-        return ResponseEntity.ok(Map.of("token", token));
+
+        // Get user
+        UserDetails user = userDetailsService.loadUserByUsername(loginRequest.getEmail());
+
+        // Generate device id
+        String deviceId = UUID.randomUUID().toString();
+
+        // Refresh token
+        String jti = jwtUtils.generateJti();
+        String refreshToken = jwtUtils.generateRefreshToken(user, jti, deviceId);
+
+        // Save refresh token
+        RefreshToken refreshTokenEntity = RefreshToken.builder()
+                .userId(userRepository.findByEmail(loginRequest.getEmail()).get().getId())
+                .deviceId(deviceId)
+                .refreshTokenHash(jwtUtils.hashToken(refreshToken))
+                .jti(jti)
+                .expiresAt(LocalDateTime.now().plusDays(30))
+                .createdAt(LocalDateTime.now())
+                .lastUsedAt(LocalDateTime.now())
+                .build();
+
+        refreshTokenRepository.save(refreshTokenEntity);
+
+        // Refresh token cookie
+        ResponseCookie refreshTokenCookie = ResponseCookie.from("refreshToken", refreshToken)
+                .httpOnly(true)
+                .secure(true)
+                .path("/api/auth/refresh")
+                .maxAge(30 * 24 * 60 * 60) // 30 days
+                .sameSite("None")
+                .build();
+
+        // Device cookie
+        ResponseCookie deviceCookie = ResponseCookie.from("deviceId", deviceId)
+                .httpOnly(false) // OK
+                .secure(true)
+                .sameSite("None")
+                .path("/")
+                .maxAge(30 * 24 * 60 * 60)
+                .build();
+
+        // Access token
+        String accessToken = jwtUtils.generateToken(user);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.add(HttpHeaders.SET_COOKIE, refreshTokenCookie.toString());
+        headers.add(HttpHeaders.SET_COOKIE, deviceCookie.toString());
+
+        return ResponseEntity.ok()
+                .headers(headers)
+                .body(Map.of("accessToken", accessToken));
+    }
+
+    @Override
+    public ResponseEntity<?> refresh(String refreshToken, String deviceId) {
+        RefreshToken refreshTokenEntity = refreshTokenRepository
+                .findByRefreshTokenHash(jwtUtils.hashToken(refreshToken))
+                .orElseThrow(() -> new BusinessException("Refresh token not found"));
+
+        if (refreshTokenEntity.getExpiresAt().isBefore(LocalDateTime.now())) {
+            refreshTokenRepository.delete(refreshTokenEntity);
+            throw new BusinessException("Refresh token expired");
+        }
+
+        UserDetails user = userDetailsService.loadUserByUsername(jwtUtils.extractEmail(refreshToken));
+
+        String newAccessToken = jwtUtils.generateToken(user);
+        String jti = jwtUtils.generateJti();
+        String newRefreshToken = jwtUtils.generateRefreshToken(user, jti, deviceId);
+
+        refreshTokenEntity.setRefreshTokenHash(jwtUtils.hashToken(newRefreshToken));
+        refreshTokenEntity.setLastUsedAt(LocalDateTime.now());
+        refreshTokenEntity.setExpiresAt(LocalDateTime.now().plusDays(30));
+        refreshTokenRepository.save(refreshTokenEntity);
+
+        ResponseCookie refreshTokenCookie = ResponseCookie.from("refreshToken", newRefreshToken)
+                .httpOnly(true)
+                .secure(true)
+                .sameSite("None") // frontend farklı domain ise None olmalı
+                .path("/api/auth/refresh")
+                .maxAge(30 * 24 * 60 * 60)
+                .build();
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.SET_COOKIE, refreshTokenCookie.toString())
+                .body(Map.of("accessToken", newAccessToken));
+    }
+
+    @Override
+    public ResponseEntity<?> logout(String deviceId) {
+        Long userId = getCurrentUserId();
+        refreshTokenRepository.findByUserIdAndDeviceId(userId, deviceId).ifPresent(refreshTokenRepository::delete);
+
+        return ResponseEntity.ok("Logout Successful");
+    }
+
+    @Override
+    public Long getCurrentUserId() {
+        Object principal = SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+        if (principal instanceof User) {
+            User user = (User) principal;
+            return user.getId();
+        }
+
+        return null;
     }
 
 }

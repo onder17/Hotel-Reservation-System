@@ -2,6 +2,7 @@ package com.rocketdev.hotelreservation.webApi.controllers;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -26,6 +27,16 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody LoginRequest request) {
         return authService.login(request);
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<?> refresh(@CookieValue("refreshToken") String refreshToken, @CookieValue("deviceId") String deviceId) {
+        return authService.refresh(refreshToken, deviceId);
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<?> logout(@CookieValue("deviceId") String deviceId) {
+        return authService.logout(deviceId);
     }
 
 }
