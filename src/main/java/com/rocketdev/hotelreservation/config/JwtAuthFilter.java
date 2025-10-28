@@ -1,10 +1,13 @@
 package com.rocketdev.hotelreservation.config;
 
 import java.io.IOException;
+import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.lang.NonNull;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -56,13 +59,18 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             UserDetails userDetails = userDetailsService.loadUserByUsername(userEmail);
 
             if (jwtUtils.validateToken(jwtToken, userDetails)) {
-                SecurityContext securityContext = SecurityContextHolder.createEmptyContext();
-                UsernamePasswordAuthenticationToken token = new UsernamePasswordAuthenticationToken(
+                String role = jwtUtils.extractRole(jwtToken);
+                GrantedAuthority authority = new SimpleGrantedAuthority(role);
+
+                UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
                         userDetails,
                         null,
-                        userDetails.getAuthorities());
-                token.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                securityContext.setAuthentication(token);
+                        List.of(authority));
+
+                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+
+                SecurityContext securityContext = SecurityContextHolder.createEmptyContext();
+                securityContext.setAuthentication(authToken);
                 SecurityContextHolder.setContext(securityContext);
             }
         }

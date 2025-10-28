@@ -165,14 +165,20 @@ public class AuthManager implements AuthService {
     }
 
     @Override
-    public Long getCurrentUserId() {
+    public User getCurrentUser() {
         Object principal = SecurityContextHolder.getContext().getAuthentication().getPrincipal();
         if (principal instanceof User) {
             User user = (User) principal;
-            return user.getId();
+            return user;
         }
 
         return null;
+    }
+
+    @Override
+    public Long getCurrentUserId() {
+        User user = getCurrentUser();
+        return user != null ? user.getId() : null;
     }
 
 }
