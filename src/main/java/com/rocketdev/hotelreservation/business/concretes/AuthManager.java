@@ -11,6 +11,7 @@ import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
@@ -64,96 +65,114 @@ public class AuthManager implements AuthService {
 
     @Override
     public ResponseEntity<?> login(LoginRequest loginRequest) {
-        authenticationManager
-                .authenticate(new UsernamePasswordAuthenticationToken(
-                        loginRequest.getEmail(), loginRequest.getPassword()));
+        try {
+            // Authenticate user
+            authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(
+                            loginRequest.getEmail(), loginRequest.getPassword()));
 
-        // Get user
-        UserDetails user = userDetailsService.loadUserByUsername(loginRequest.getEmail());
+            // Get user details
+            UserDetails user = userDetailsService.loadUserByUsername(loginRequest.getEmail());
 
-        // Generate device id
-        String deviceId = UUID.randomUUID().toString();
+            // Generate device ID
+            String deviceId = UUID.randomUUID().toString();
 
-        // Refresh token
-        String jti = jwtUtils.generateJti();
-        String refreshToken = jwtUtils.generateRefreshToken(user, jti, deviceId);
+            // Generate refresh token
+            String jti = jwtUtils.generateJti();
+            String refreshToken = jwtUtils.generateRefreshToken(user, jti, deviceId);
 
-        // Save refresh token
-        RefreshToken refreshTokenEntity = RefreshToken.builder()
-                .userId(userRepository.findByEmail(loginRequest.getEmail()).get().getId())
-                .deviceId(deviceId)
-                .refreshTokenHash(jwtUtils.hashToken(refreshToken))
-                .jti(jti)
-                .expiresAt(LocalDateTime.now().plusDays(30))
-                .createdAt(LocalDateTime.now())
-                .lastUsedAt(LocalDateTime.now())
-                .build();
+            // Save refresh token entity
+            RefreshToken refreshTokenEntity = RefreshToken.builder()
+                    .userId(userRepository.findByEmail(loginRequest.getEmail()).get().getId())
+                    .deviceId(deviceId)
+                    .refreshTokenHash(jwtUtils.hashToken(refreshToken))
+                    .jti(jti)
+                    .expiresAt(LocalDateTime.now().plusDays(30))
+                    .createdAt(LocalDateTime.now())
+                    .lastUsedAt(LocalDateTime.now())
+                    .build();
 
-        refreshTokenRepository.save(refreshTokenEntity);
+            refreshTokenRepository.save(refreshTokenEntity);
 
-        // Refresh token cookie
-        ResponseCookie refreshTokenCookie = ResponseCookie.from("refreshToken", refreshToken)
-                .httpOnly(true)
-                .secure(true)
-                .path("/api/auth/refresh")
-                .maxAge(30 * 24 * 60 * 60) // 30 days
-                .sameSite("None")
-                .build();
+            // Set cookies
+            ResponseCookie refreshTokenCookie = ResponseCookie.from("refreshToken", refreshToken)
+                    .httpOnly(true)
+                    .secure(true)
+                    .path("/api/auth/refresh")
+                    .maxAge(30 * 24 * 60 * 60)
+                    .sameSite("None")
+                    .build();
 
-        // Device cookie
-        ResponseCookie deviceCookie = ResponseCookie.from("deviceId", deviceId)
-                .httpOnly(false) // OK
-                .secure(true)
-                .sameSite("None")
-                .path("/")
-                .maxAge(30 * 24 * 60 * 60)
-                .build();
+            ResponseCookie deviceCookie = ResponseCookie.from("deviceId", deviceId)
+                    .httpOnly(false)
+                    .secure(true)
+                    .sameSite("None")
+                    .path("/")
+                    .maxAge(30 * 24 * 60 * 60)
+                    .build();
 
-        // Access token
-        String accessToken = jwtUtils.generateToken(user);
+            // Generate access token
+            String accessToken = jwtUtils.generateToken(user);
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.add(HttpHeaders.SET_COOKIE, refreshTokenCookie.toString());
-        headers.add(HttpHeaders.SET_COOKIE, deviceCookie.toString());
+            HttpHeaders headers = new HttpHeaders();
+            headers.add(HttpHeaders.SET_COOKIE, refreshTokenCookie.toString());
+            headers.add(HttpHeaders.SET_COOKIE, deviceCookie.toString());
 
-        return ResponseEntity.ok()
-                .headers(headers)
-                .body(Map.of("accessToken", accessToken));
+            return ResponseEntity.ok()
+                    .headers(headers)
+                    .body(Map.of("accessToken", accessToken));
+
+        } catch (AuthenticationException ex) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("message", "E-posta veya şifre hatalı"));
+        } catch (Exception ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Sunucu hatası"));
+        }
     }
 
     @Override
     public ResponseEntity<?> refresh(String refreshToken, String deviceId) {
-        RefreshToken refreshTokenEntity = refreshTokenRepository
-                .findByRefreshTokenHash(jwtUtils.hashToken(refreshToken))
-                .orElseThrow(() -> new BusinessException("Refresh token not found"));
+        try {
+            RefreshToken refreshTokenEntity = refreshTokenRepository
+                    .findByRefreshTokenHash(jwtUtils.hashToken(refreshToken))
+                    .orElseThrow(() -> new BusinessException("Refresh token not found"));
 
-        if (refreshTokenEntity.getExpiresAt().isBefore(LocalDateTime.now())) {
-            refreshTokenRepository.delete(refreshTokenEntity);
-            throw new BusinessException("Refresh token expired");
+            if (refreshTokenEntity.getExpiresAt().isBefore(LocalDateTime.now())) {
+                refreshTokenRepository.delete(refreshTokenEntity);
+                throw new BusinessException("Refresh token expired");
+            }
+
+            UserDetails user = userDetailsService.loadUserByUsername(jwtUtils.extractEmail(refreshToken));
+
+            String newAccessToken = jwtUtils.generateToken(user);
+            String jti = jwtUtils.generateJti();
+            String newRefreshToken = jwtUtils.generateRefreshToken(user, jti, deviceId);
+
+            refreshTokenEntity.setRefreshTokenHash(jwtUtils.hashToken(newRefreshToken));
+            refreshTokenEntity.setLastUsedAt(LocalDateTime.now());
+            refreshTokenEntity.setExpiresAt(LocalDateTime.now().plusDays(30));
+            refreshTokenRepository.save(refreshTokenEntity);
+
+            ResponseCookie refreshTokenCookie = ResponseCookie.from("refreshToken", newRefreshToken)
+                    .httpOnly(true)
+                    .secure(true)
+                    .sameSite("None") // frontend farklı domain ise None olmalı
+                    .path("/api/auth/refresh")
+                    .maxAge(30 * 24 * 60 * 60)
+                    .build();
+
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.SET_COOKIE, refreshTokenCookie.toString())
+                    .body(Map.of("accessToken", newAccessToken));
+        } catch (BusinessException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("message", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Sunucu hatası"));
         }
 
-        UserDetails user = userDetailsService.loadUserByUsername(jwtUtils.extractEmail(refreshToken));
-
-        String newAccessToken = jwtUtils.generateToken(user);
-        String jti = jwtUtils.generateJti();
-        String newRefreshToken = jwtUtils.generateRefreshToken(user, jti, deviceId);
-
-        refreshTokenEntity.setRefreshTokenHash(jwtUtils.hashToken(newRefreshToken));
-        refreshTokenEntity.setLastUsedAt(LocalDateTime.now());
-        refreshTokenEntity.setExpiresAt(LocalDateTime.now().plusDays(30));
-        refreshTokenRepository.save(refreshTokenEntity);
-
-        ResponseCookie refreshTokenCookie = ResponseCookie.from("refreshToken", newRefreshToken)
-                .httpOnly(true)
-                .secure(true)
-                .sameSite("None") // frontend farklı domain ise None olmalı
-                .path("/api/auth/refresh")
-                .maxAge(30 * 24 * 60 * 60)
-                .build();
-
-        return ResponseEntity.ok()
-                .header(HttpHeaders.SET_COOKIE, refreshTokenCookie.toString())
-                .body(Map.of("accessToken", newAccessToken));
     }
 
     @Override
